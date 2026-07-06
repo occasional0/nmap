@@ -1,52 +1,79 @@
-name: Build Fully Static ncat for ARM64 (Alpine)
+name: Build Fully Static ncat for ARM64
 
 on:
   push:
     branches: [ "main", "master" ]
   pull_request:
     branches: [ "main", "master" ]
-  workflow_dispatch:    # 允许手动触发
+  workflow_dispatch:
 
 jobs:
   build-static-arm64:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout source code
+      - name: Checkout
         uses: actions/checkout@v4
 
-      # 安装 QEMU 用户态模拟，让 x86_64 runner 可以运行 ARM64 容器
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
-      - name: Build static ncat in Alpine ARM64 container
+      - name: Build static ncat with compiled static libs
         run: |
           docker run --rm --platform linux/arm64 \
             -v $PWD:/build -w /build \
-            alpine:3.19 \
-            sh -c "
+            ubuntu:22.04 \
+            bash -c "
               set -ex
 
-              # 安装编译工具及所有必需的静态库（Alpine 的 apk 提供 .a 文件）
-              apk add --no-cache \
-                build-base \
-                autoconf \
-                automake \
-                libtool \
-                pkgconfig \
-                flex \
-                bison \
-                openssl-dev \
-                openssl-libs-static \
-                libpcap-dev \
-                libpcap-static \
-                pcre-dev \
-                pcre-static \
-                lua5.3-dev \
-                lua5.3-static \
-                zlib-dev \
-                zlib-static
+              # 安装编译工具
+              apt-get update
+              apt-get install -y \
+                build-essential autoconf automake libtool pkg-config \
+                flex bison wget \
+                libssl-dev zlib1g-dev
 
-              # 配置：启用静态链接，禁用共享库，仅构建 ncat（跳过其他组件）
+              # ============================================
+              # 1. 编译 libpcap 静态库
+              # ============================================
+              cd /tmp
+              wget -q https://www.tcpdump.org/release/libpcap-1.10.5.tar.gz
+              tar -xzf libpcap-1.10.5.tar.gz
+              cd libpcap-1.10.5
+              ./configure --enable-static --disable-shared --prefix=/usr
+              make -j\$(nproc)
+              make install
+
+              # ============================================
+              # 2. 编译 Lua 5.3 静态库
+              # ============================================
+              cd /tmp
+              wget -q https://www.lua.org/ftp/lua-5.3.6.tar.gz
+              tar -xzf lua-5.3.6.tar.gz
+              cd lua-5.3.6
+              # 修改 Makefile 以生成静态库
+              sed -i 's/^TOOLCHAIN?=.*/TOOLCHAIN?=linux/' Makefile
+              make -j\$(nproc) linux
+              cp src/liblua.a /usr/lib/
+              cp src/*.h /usr/include/
+
+              # ============================================
+              # 3. 编译 PCRE 静态库
+              # ============================================
+              cd /tmp
+              wget -q https://sourceforge.net/projects/pcre/files/pcre/8.45/pcre-8.45.tar.gz
+              tar -xzf pcre-8.45.tar.gz
+              cd pcre-8.45
+              ./configure --enable-static --disable-shared --prefix=/usr \
+                --disable-cpp --enable-utf8
+              make -j\$(nproc)
+              make install
+
+              # ============================================
+              # 4. 编译 ncat（静态链接）
+              # ============================================
+              cd /build
+
+              # 配置（使用已安装的静态库）
               ./configure \
                 --enable-static \
                 --disable-shared \
@@ -54,35 +81,28 @@ jobs:
                 --without-ndiff \
                 --without-zenmap \
                 --without-nping \
-                LDFLAGS=\"-static -no-pie\"
+                CPPFLAGS=\"-I/usr/include\" \
+                LDFLAGS=\"-static -no-pie -L/usr/lib -lpcap -llua -lpcre -lssl -lcrypto -lz -lm -ldl -lpthread\"
 
-              # ★ 关键修正：直接进入 ncat 子目录进行编译（而非根目录的 make ncat）
+              # 进入 ncat 子目录编译
               cd ncat
               make -j\$(nproc)
 
-              # 返回项目根目录，验证产物是否存在
+              # 验证产物
               cd ..
               if [ ! -f ncat/ncat ]; then
-                echo \"ERROR: ncat/ncat not found after build\"
-                find . -name ncat -type f || true
+                echo \"ERROR: ncat/ncat not found\"
                 exit 1
               fi
 
-              # 显示文件信息，确认静态编译
+              echo \"=== 编译成功 ===\"
               file ncat/ncat
-              ldd ncat/ncat 2>/dev/null && echo \"⚠️ 警告：二进制是动态链接的\" || echo \"✅ 静态编译成功，无动态依赖\"
+              ldd ncat/ncat 2>/dev/null && echo \"⚠️ 动态链接\" || echo \"✅ 完全静态，无依赖\"
             "
 
-      # 调试（可选）：列出生成的文件，便于排查
-      - name: Debug binary info
-        run: |
-          ls -la ncat/ncat
-          file ncat/ncat || true
-
-      # 上传产物
       - name: Upload static ncat binary
         uses: actions/upload-artifact@v4
         with:
           name: ncat-static-arm64
-          path: ncat/ncat          # 明确指定二进制文件
-          if-no-files-found: error # 若文件不存在则使工作流失败
+          path: ncat/ncat
+          if-no-files-found: error
