@@ -25,7 +25,7 @@ jobs:
             bash -c "
               set -ex
 
-              # 安装编译工具
+              # 安装编译工具及系统库（openssl 和 zlib 使用系统静态库）
               apt-get update
               apt-get install -y \
                 build-essential autoconf automake libtool pkg-config \
@@ -44,17 +44,16 @@ jobs:
               make install
 
               # ============================================
-              # 2. 编译 Lua 5.3 静态库
+              # 2. 编译 Lua 静态库（只编译库，不编译主程序，避免 readline 依赖）
               # ============================================
               cd /tmp
               wget -q https://www.lua.org/ftp/lua-5.3.6.tar.gz
               tar -xzf lua-5.3.6.tar.gz
-              cd lua-5.3.6
-              # 修改 Makefile 以生成静态库
-              sed -i 's/^TOOLCHAIN?=.*/TOOLCHAIN?=linux/' Makefile
-              make -j\$(nproc) linux
-              cp src/liblua.a /usr/lib/
-              cp src/*.h /usr/include/
+              cd lua-5.3.6/src
+              # 直接编译 liblua.a（不依赖 readline）
+              make liblua.a
+              cp liblua.a /usr/lib/
+              cp *.h /usr/include/
 
               # ============================================
               # 3. 编译 PCRE 静态库
@@ -69,11 +68,10 @@ jobs:
               make install
 
               # ============================================
-              # 4. 编译 ncat（静态链接）
+              # 4. 编译 ncat（静态链接所有库）
               # ============================================
               cd /build
 
-              # 配置（使用已安装的静态库）
               ./configure \
                 --enable-static \
                 --disable-shared \
@@ -84,7 +82,6 @@ jobs:
                 CPPFLAGS=\"-I/usr/include\" \
                 LDFLAGS=\"-static -no-pie -L/usr/lib -lpcap -llua -lpcre -lssl -lcrypto -lz -lm -ldl -lpthread\"
 
-              # 进入 ncat 子目录编译
               cd ncat
               make -j\$(nproc)
 
@@ -97,7 +94,7 @@ jobs:
 
               echo \"=== 编译成功 ===\"
               file ncat/ncat
-              ldd ncat/ncat 2>/dev/null && echo \"⚠️ 动态链接\" || echo \"✅ 完全静态，无依赖\"
+              ldd ncat/ncat 2>/dev/null && echo \"⚠️ 警告：动态链接\" || echo \"✅ 完全静态，无任何动态依赖\"
             "
 
       - name: Upload static ncat binary
