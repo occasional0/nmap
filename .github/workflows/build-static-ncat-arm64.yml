@@ -5,65 +5,57 @@ on:
     branches: [ "main", "master" ]
   pull_request:
     branches: [ "main", "master" ]
-  workflow_dispatch:    # 允许手动触发
+  workflow_dispatch:
 
 jobs:
   build-static-arm64:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout source code
+      - name: Checkout
         uses: actions/checkout@v4
 
-      # 安装 QEMU 用户态模拟器，使 x86 运行 ARM64 容器
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
-      # 在 ARM64 容器内执行编译（原生编译，非交叉编译）
-      - name: Build ncat statically in ARM64 container
+      - name: Build ncat in ARM64 container
         run: |
           docker run --rm --platform linux/arm64 \
             -v $PWD:/build -w /build \
             ubuntu:22.04 \
             bash -c "
               set -ex
-
-              # 安装编译依赖（均为 ARM64 原生库）
               apt-get update
               apt-get install -y \
-                build-essential \
-                libssl-dev \
-                libpcap-dev \
-                libpcre3-dev \
-                liblua5.3-dev \
-                zlib1g-dev \
-                autoconf \
-                automake \
-                libtool \
-                pkg-config \
-                flex \
-                bison
+                build-essential libssl-dev libpcap-dev libpcre3-dev \
+                liblua5.3-dev zlib1g-dev autoconf automake libtool \
+                pkg-config flex bison
 
-              # 配置静态编译（只构建 ncat）
               ./configure \
-                --enable-static \
-                --disable-shared \
-                --without-nmap \
-                --without-ndiff \
-                --without-zenmap \
-                --without-nping \
-                LDFLAGS=\"-static -no-pie\"
+                --enable-static --disable-shared \
+                --without-nmap --without-ndiff --without-zenmap --without-nping \
+                LDFLAGS='-static -no-pie'
 
-              # 编译 ncat（使用所有 CPU 核心）
               make -j\$(nproc) ncat
 
-              # 验证生成的二进制文件
-              file ncat/ncat
-              ldd ncat/ncat || echo \"静态编译，无动态依赖\"
+              # 确认生成
+              file ncat/ncat || (echo 'ncat not found' && exit 1)
+              ldd ncat/ncat 2>/dev/null || echo 'Static build'
             "
 
-      # 上传编译产物
-      - name: Upload static ncat binary
+      - name: Debug file structure
+        run: |
+          echo "Current directory: $(pwd)"
+          echo "Contents of ./ncat:"
+          ls -la ncat/ || echo "ncat/ does not exist"
+          echo "Search for any file named 'ncat':"
+          find . -name ncat -type f -exec ls -la {} \;
+
+      - name: Upload ncat binary
         uses: actions/upload-artifact@v4
         with:
           name: ncat-static-arm64
-          path: ncat/ncat
+          # 使用通配符匹配所有名为 ncat 的可执行文件（不会出错）
+          path: |
+            **/ncat
+          # 如果还是找不到，就明确失败
+          if-no-files-found: error
