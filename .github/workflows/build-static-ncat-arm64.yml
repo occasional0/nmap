@@ -1,0 +1,69 @@
+name: Build Static ncat for ARM64
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:    # 允许手动触发
+
+jobs:
+  build-static-arm64:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      # 安装 QEMU 用户态模拟器，使 x86 运行 ARM64 容器
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      # 在 ARM64 容器内执行编译（原生编译，非交叉编译）
+      - name: Build ncat statically in ARM64 container
+        run: |
+          docker run --rm --platform linux/arm64 \
+            -v $PWD:/build -w /build \
+            ubuntu:22.04 \
+            bash -c "
+              set -ex
+
+              # 安装编译依赖（均为 ARM64 原生库）
+              apt-get update
+              apt-get install -y \
+                build-essential \
+                libssl-dev \
+                libpcap-dev \
+                libpcre3-dev \
+                liblua5.3-dev \
+                zlib1g-dev \
+                autoconf \
+                automake \
+                libtool \
+                pkg-config \
+                flex \
+                bison
+
+              # 配置静态编译（只构建 ncat）
+              ./configure \
+                --enable-static \
+                --disable-shared \
+                --without-nmap \
+                --without-ndiff \
+                --without-zenmap \
+                --without-nping \
+                LDFLAGS=\"-static -no-pie\"
+
+              # 编译 ncat（使用所有 CPU 核心）
+              make -j\$(nproc) ncat
+
+              # 验证生成的二进制文件
+              file ncat/ncat
+              ldd ncat/ncat || echo \"静态编译，无动态依赖\"
+            "
+
+      # 上传编译产物
+      - name: Upload static ncat binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ncat-static-arm64
+          path: ncat/ncat
